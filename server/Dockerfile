@@ -1,20 +1,24 @@
-#  Dockerfile for Node Express Backend
+# Dockerfile for Node Express Backend
 
-#FROM node:10.16-alpine
 FROM node:21.7.3
-# Create App Directory
-RUN mkdir -p /usr/src/app
+
+# Install ffmpeg for video frame extraction
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
 WORKDIR /usr/src/app
 
-# Install Dependencies
+# Install dependencies
 COPY package*.json ./
-
 RUN npm install --silent
 
 # Copy app source code
 COPY . .
 
-# Exports
-EXPOSE 5000
+# Create runtime directories used by uploads, detection, frames, and PDF reports
+RUN mkdir -p uploads videos frames reports
 
-CMD ["npm","start"]
+# Render provides PORT automatically for web services
+EXPOSE 10000
+
+CMD ["npm", "start"]
