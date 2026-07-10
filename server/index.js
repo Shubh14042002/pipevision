@@ -130,12 +130,47 @@ app.use('/frames', express.static(path.join(__dirname, 'frames')));
 //CONNECTING TO DATABASE
 const CONNECTION_URL = process.env.DATABASE_CONNECTION;
 const PORT = process.env.PORT || 5001;
-mongoose.set('strictQuery', false);
-mongoose.connect(CONNECTION_URL)
-    .then(() => app.listen(PORT, () => console.log(`Server running on port: ${PORT} `)))
-    .catch((error) => console.log(error.message));
+const HOST = "0.0.0.0";
 
-process.on("unhandledRejection", (err, promise) => {
-    console.log(`Logged Error: ${err.message}`);
+if (!CONNECTION_URL) {
+  console.error("DATABASE_CONNECTION environment variable is missing.");
+  process.exit(1);
+}
+
+if (!process.env.JWT_SECRET) {
+  console.error("JWT_SECRET environment variable is missing.");
+  process.exit(1);
+}
+
+if (!process.env.REFRESH_TOKEN_SECRET) {
+  console.error("REFRESH_TOKEN_SECRET environment variable is missing.");
+  process.exit(1);
+}
+
+mongoose.set("strictQuery", false);
+
+let server;
+
+mongoose
+  .connect(CONNECTION_URL)
+  .then(() => {
+    console.log("MongoDB connected successfully.");
+
+    server = app.listen(PORT, HOST, () => {
+      console.log(`Server running on http://${HOST}:${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("MongoDB connection error:", error.message);
+    process.exit(1);
+  });
+
+process.on("unhandledRejection", (err) => {
+  console.error(`Unhandled rejection: ${err.message}`);
+
+  if (server) {
     server.close(() => process.exit(1));
+  } else {
+    process.exit(1);
+  }
 });
