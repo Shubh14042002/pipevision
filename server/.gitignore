@@ -1,0 +1,21 @@
+# Node.js
+node_modules/
+npm-debug.log
+
+
+package-lock.json
+
+# Build
+/build
+
+.env
+
+notes.txt
+
+backend-deployment.yaml
+
+
+uploads/
+frames/
+videos/
+/reports

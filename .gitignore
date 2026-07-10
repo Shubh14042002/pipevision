@@ -1,0 +1,15 @@
+docker-compose.yml
+# Environment files
+.env
+.env.*
+!.env.example
+server/.env
+client/.env
+
+# Runtime/generated files
+server/uploads/
+server/videos/
+server/frames/
+server/reports/
+*.log
+.DS_Store
