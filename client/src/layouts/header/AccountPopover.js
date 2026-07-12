@@ -1,13 +1,22 @@
 // src/layouts/header/AccountPopover.js
-import React, { useState, useContext } from 'react';
-import { Link } from 'react-router-dom';
-import { Box, Divider, Stack, MenuItem, IconButton, Popover } from '@mui/material';
-import AuthContext from '../../context/AuthContext';
-import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+
+import React, { useState, useContext } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  Box,
+  Divider,
+  Stack,
+  MenuItem,
+  IconButton,
+  Popover,
+} from "@mui/material";
+import AuthContext from "../../context/AuthContext";
+import AccountCircleIcon from "@mui/icons-material/AccountCircle";
 
 export default function AccountPopover() {
   const [open, setOpen] = useState(null);
-  const { logoutUser, user } = useContext(AuthContext);
+  const { logoutUser } = useContext(AuthContext);
+  const navigate = useNavigate();
 
   const handleOpen = (event) => {
     setOpen(event.currentTarget);
@@ -17,10 +26,15 @@ export default function AccountPopover() {
     setOpen(null);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setOpen(null);
-    logoutUser();
-    window.location.href = "/";
+
+    // Important:
+    // Wait for logoutUser to clear localStorage/context/cookie.
+    // Do NOT redirect to "/" because "/" is the project dashboard.
+    await logoutUser();
+
+    navigate("/login", { replace: true });
   };
 
   return (
@@ -33,18 +47,18 @@ export default function AccountPopover() {
         open={Boolean(open)}
         anchorEl={open}
         onClose={handleClose}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
         PaperProps={{
           sx: {
             p: 1,
             mt: 1,
             ml: 0.75,
-            width: 180,  // Increased width for a larger popover
-            borderRadius: 1, // Slightly rounder corners
-            '& .MuiMenuItem-root': {
-              typography: 'body1', // Use a slightly larger font
-              py: 1, // Increase vertical padding on menu items
+            width: 180,
+            borderRadius: 1,
+            "& .MuiMenuItem-root": {
+              typography: "body1",
+              py: 1,
               borderRadius: 1,
             },
           },
@@ -54,10 +68,10 @@ export default function AccountPopover() {
           <MenuItem onClick={handleClose} component={Link} to="/youraccount">
             Account
           </MenuItem>
-          <Divider sx={{ my: 0.5, borderStyle: 'dashed' }} />
-          <MenuItem onClick={handleLogout}>
-            Logout
-          </MenuItem>
+
+          <Divider sx={{ my: 0.5, borderStyle: "dashed" }} />
+
+          <MenuItem onClick={handleLogout}>Logout</MenuItem>
         </Stack>
       </Popover>
     </>

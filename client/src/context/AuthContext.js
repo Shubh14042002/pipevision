@@ -1,60 +1,83 @@
-import { createContext, useState, useEffect } from 'react'
-import {jwtDecode} from 'jwt-decode';
-import { useNavigate } from "react-router-dom";
-import React from 'react';
-import { API } from '../api';
-const AuthContext = createContext()
+// src/context/AuthContext.js
+
+import { createContext, useState, useEffect } from "react";
+import { jwtDecode } from "jwt-decode";
+import React from "react";
+import { API } from "../api";
+
+const AuthContext = createContext();
 
 export default AuthContext;
 
+// Handles auth state for the application.
+export const AuthProvider = ({ children }) => {
+  const [authToken, setAuthToken] = useState(() =>
+    localStorage.getItem("authToken") ? localStorage.getItem("authToken") : null
+  );
 
-// THIS PAGE IS FOR HANDLING THE USERS ACCOUNT IN THE APPLICATION
+  const [user, setUser] = useState(() => {
+    const token = localStorage.getItem("authToken");
 
+    if (!token) return null;
 
-export const AuthProvider = ({children}) => {
+    try {
+      return jwtDecode(token);
+    } catch (error) {
+      localStorage.removeItem("authToken");
+      return null;
+    }
+  });
 
+  const [loading, setLoading] = useState(true);
 
-    let [authToken, setAuthToken] = useState(()=> localStorage.getItem('authToken') ? localStorage.getItem('authToken') : null)         // if you can get item, get the item, if you cant, null
-    let [user, setUser] = useState(()=> localStorage.getItem('authToken') ? jwtDecode (localStorage.getItem('authToken')) : null)
-    let [loading, setLoading] = useState(true)
-    const navigate = useNavigate();
+  const logoutUser = async () => {
+    // Clear frontend state immediately so the UI logs out even if backend logout fails.
+    localStorage.removeItem("authToken");
+    setAuthToken(null);
+    setUser(null);
 
+    try {
+      // Important:
+      // Third argument is Axios config.
+      // This is required so the refresh-token cookie is sent and can be cleared by the backend.
+      await API.post("/api/auth/logout", {}, { withCredentials: true });
+    } catch (error) {
+      // Do not block logout if backend cookie clearing fails.
+      console.error("Logout API failed:", error.response?.data || error.message);
+    }
+  };
 
-    let logoutUser = async () => {
-        const { data } = await API.post("/api/auth/logout", { withCredentials: true });
-        setAuthToken(null)
-        setUser(null)
-        localStorage.removeItem('authToken')
-        navigate('/login')
+  useEffect(() => {
+    if (authToken) {
+      try {
+        setUser(jwtDecode(authToken));
+      } catch (error) {
+        localStorage.removeItem("authToken");
+        setAuthToken(null);
+        setUser(null);
+      }
+    } else {
+      setUser(null);
     }
 
+    setLoading(false);
+  }, [authToken]);
 
-    let contextData = {
-        user:user,
-        authTokens:authToken,
-        setAuthToken:setAuthToken,
-        setUser:setUser,
-        //loginUser:loginUser,
-        logoutUser:logoutUser,
-    }
+  const contextData = {
+    user,
+    authToken,
 
+    // Keep this old name too in case other files use authTokens.
+    authTokens: authToken,
 
-    useEffect(()=> {
-        if(authToken){
-            setUser(jwtDecode(authToken)) //only problem with this is that is refreshes token too  much, but its not doing it anymore
-        }
-        setLoading(false)
+    setAuthToken,
+    setUser,
+    logoutUser,
+  };
 
-    }, [authToken, loading])
-
-
-
-
-
-    return(
-        <AuthContext.Provider value={contextData} >
-            {loading ? null : children}
-        </AuthContext.Provider>
-    )
-}
-
+  return (
+    <AuthContext.Provider value={contextData}>
+      {loading ? null : children}
+    </AuthContext.Provider>
+  );
+};
