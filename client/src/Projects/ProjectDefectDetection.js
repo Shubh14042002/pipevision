@@ -12,8 +12,25 @@ import {
 import { ArrowBack, ArrowForward, Add } from "@mui/icons-material";
 import { useParams, useLocation, useNavigate} from "react-router-dom";
 import ReactPlayer from "react-player";
-import { API } from "../api";
+import { API, API_BASE_URL, LOCAL_API_BASE_URL } from "../api";
 import SaveIcon from '@mui/icons-material/Save';
+
+const getMediaUrl = (pathOrUrl) => {
+  if (!pathOrUrl) return "";
+
+  // If the database has an old local URL, convert the host to the deployed API URL.
+  if (pathOrUrl.startsWith(LOCAL_API_BASE_URL)) {
+  return pathOrUrl.replace(LOCAL_API_BASE_URL, API_BASE_URL);
+}
+
+  // If it is already a full URL, use it as-is.
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    return pathOrUrl;
+  }
+
+  // If it is a relative backend path like /frames/frame_47.jpg
+  return `${API_BASE_URL}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
+};
 
 const ProjectDefectDetection = () => {
   const { id } = useParams();
@@ -286,12 +303,12 @@ return (
               Defect {currentDefectIndex + 1} of {detectionResults.length}
             </Typography>
             <Box sx={{ my: 2 }}>
-              <img
-                src={`http://localhost:5001${detectionResults[currentDefectIndex]?.framePath}`}
-                alt={`Frame ${detectionResults[currentDefectIndex]?.frameNumber}`}
-                width="100%"
-                style={{ maxHeight: "400px", objectFit: "contain" }}
-              />
+             <img
+              src={getMediaUrl(detectionResults[currentDefectIndex]?.framePath)}
+              alt={`Frame ${detectionResults[currentDefectIndex]?.frameNumber}`}
+              width="100%"
+              style={{ maxHeight: "400px", objectFit: "contain" }}
+            />
             </Box>
             <Box sx={{ display: "flex", justifyContent: "space-between", mb: 2 }}>
               <IconButton onClick={prevDefect} disabled={currentDefectIndex === 0}>
