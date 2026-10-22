@@ -9,7 +9,11 @@ const API = axios.create({
   baseURL: API_BASE_URL,
 });
 
-export const refresh = () =>
-  API.get("/api/auth/refresh", { withCredentials: true });
+let pendingRefresh;
+export const refresh = () => {
+  if (!pendingRefresh) pendingRefresh = API.get("/api/auth/refresh", { withCredentials: true })
+    .finally(() => { pendingRefresh = null; });
+  return pendingRefresh;
+};
 
 export { API };

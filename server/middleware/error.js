@@ -15,11 +15,11 @@ const errorHandler = (err, req, res, next) => {
     error = new ErrorResponse(message, 400);
   }
 
-  console.log(error.message);
+  if (err.name === "CastError" || err.code === "LIMIT_FILE_SIZE") error = new ErrorResponse("Invalid input or upload exceeds 100 MB", 400);
 
-  res.status(error.statusCode || 500).json({
+  res.status(Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599 ? error.statusCode : 500).json({
     success: false,
-    error: error.message || "Server Error",
+    error: Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 500 ? error.message : "Server Error",
   });
 };
 

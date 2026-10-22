@@ -1,6 +1,7 @@
 // src/App.js
-import React from "react";
-import { BrowserRouter, useRoutes } from "react-router-dom";
+import React, { useContext } from "react";
+import AuthContext from "./context/AuthContext";
+import { Navigate, useRoutes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 //import DashboardLayout from "./dashboard/DashboardLayout";
 import DashboardLayout from './layouts';
@@ -16,6 +17,8 @@ import AdminPage from './account/AdminPage';
 import AdminRoute from './PrivateRoutes/AdminRoute';
 import ProjectDefectDetection from './Projects/ProjectDefectDetection';
 
+const RequireLogin = ({ children }) => useContext(AuthContext).user ? children : <Navigate to="/login" replace />;
+
 const App  = () =>  { 
 
   const routes = useRoutes([
@@ -26,29 +29,29 @@ const App  = () =>  {
       children: [
         {
           path: '' ,
-          element:  <ProjectList/>
+          element:  <RequireLogin><ProjectList /></RequireLogin>
         },
         {
           path: 'project',
-          element: <ProjectHome />,
+          element: <RequireLogin><ProjectHome /></RequireLogin>,
           children: [
             {
               path: ':id',
-              element: <ProjectHome />,
+              element: <RequireLogin><ProjectHome /></RequireLogin>,
             }
           ],
         },
         {
           path: 'project/:id/detection-results',
-          element: <ProjectDefectDetection />
+          element: <RequireLogin><ProjectDefectDetection /></RequireLogin>
         },
         {
           path: 'project/:id/video/:videoId',
-          element: <ProjectVideo /> // This component shows video details
+          element: <RequireLogin><ProjectVideo /></RequireLogin> // This component shows video details
         },
         {
           path: 'createproject' ,
-          element:  <ProjectCreation/>
+          element:  <RequireLogin><ProjectCreation /></RequireLogin>
         },
         {
           path: 'register',

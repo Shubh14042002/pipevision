@@ -43,7 +43,7 @@ const ProjectList = () => {
     const fetchProjects = async () => {
       setLoading(true);
       try {
-        const { data } = await API.get("/api/project/getprojects");
+        const { data } = await axiosPrivate.get("/api/project/getprojects");
         const sortedProjects = data.allProjects.sort(
           (a, b) => new Date(b.dateOpened) - new Date(a.dateOpened)
         );

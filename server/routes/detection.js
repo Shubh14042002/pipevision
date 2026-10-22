@@ -3,6 +3,8 @@ import express from "express";
 import { detectDefects, getDetectionResults,saveDetectionResults } from "../controllers/detection.js";
 
 const router = express.Router();
+import { authenticate, authorizeProject } from "../middleware/auth.js";
+router.use(authenticate, authorizeProject);
 
 router.post("/", detectDefects); // Endpoint for defect detection
 router.post("/saveResults", saveDetectionResults); // Endpoint for saving detection results

@@ -2,36 +2,12 @@
 import fs, { promises as fsPromises } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import axios from "axios";
 import ffmpeg from "fluent-ffmpeg";
 import Project from "../models/Project.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const jsonFilePath = path.join(__dirname, "..", "data", "dent.json");
-
-const downloadVideo = async (videoUrl, videoId) => {
-    // Determine the path to the videos folder
-    const videosFolder = path.join(__dirname, "..", "videos");
-    // Check if the folder exists; if not, create it (with recursive option)
-    if (!fs.existsSync(videosFolder)) {
-      fs.mkdirSync(videosFolder, { recursive: true });
-      console.log("Created videos folder:", videosFolder);
-    }
-    
-    // Build the full video path
-    const videoPath = path.join(videosFolder, `${videoId}.mp4`);
-    console.log(`🌍 Downloading video from ${videoUrl}...`);
-    const response = await axios({ method: "get", url: videoUrl, responseType: "stream" });
-    const writer = fs.createWriteStream(videoPath);
-    response.data.pipe(writer);
-    await new Promise((resolve, reject) => {
-      writer.on("finish", resolve);
-      writer.on("error", reject);
-    });
-    console.log("✅ Video downloaded successfully at:", videoPath);
-    return videoPath;
-  };
 
 const findKeyDefects = (detections) => {
     let defects = [];
@@ -57,11 +33,10 @@ const findKeyDefects = (detections) => {
         const bestFrame = currentDefect.reduce((max, d) => (d.confidence > max.confidence ? d : max), currentDefect[0]);
         defects.push(bestFrame);
     }
-    console.log(`✅ Identified ${defects.length} key defects.`);
     return defects;
 };
 
-const extractFrames = async (videoPath, keyDefects) => {
+const extractFrames = async (videoPath, keyDefects, videoId) => {
     const framesDir = path.join(__dirname, "..", "frames");
     if (!fs.existsSync(framesDir)) {
       fs.mkdirSync(framesDir, { recursive: true });
@@ -69,11 +44,11 @@ const extractFrames = async (videoPath, keyDefects) => {
   
     let extractedFrames = [];
     for (const defect of keyDefects) {
-      const frameFilename = `frame_${defect.frame}.jpg`;
+      const frameFilename = `${videoId}_frame_${defect.frame}.jpg`;
       const framePath = path.join(framesDir, frameFilename);
   
       await new Promise((resolve, reject) => {
-        ffmpeg(videoPath)
+        ffmpeg(videoPath, { timeout: 60 })
           .seekInput((defect.frame / 30).toFixed(2))
           .frames(1)
           .outputOptions(
@@ -99,52 +74,18 @@ const extractFrames = async (videoPath, keyDefects) => {
           .run();
       });
     }
-    console.log(`✅ Extracted ${extractedFrames.length} frames for defects.`);
     return extractedFrames;
   };
   
 
-// const detectDefects = async (req, res) => {
-//     const { projectId, videoId } = req.body;
-//     if (!projectId || !videoId) return res.status(400).json({ error: "Missing projectId or videoId" });
-//     try {
-//         console.log("🔍 Processing defect detection for project:", projectId, "Video ID:", videoId);
-//         const project = await Project.findById(projectId);
-//         if (!project) return res.status(404).json({ error: "Project not found." });
-//         const videoIndex = project.videos.findIndex(v => v._id.toString() === videoId);
-//         if (videoIndex === -1) return res.status(404).json({ error: "Video not found in project." });
-//         let video = project.videos[videoIndex];
-//         let videoPath = video.url.startsWith("http") ? await downloadVideo(video.url, videoId) : video.url;
-//         console.log("📥 Reading JSON detection results...");
-//         const jsonContent = await fsPromises.readFile(jsonFilePath, "utf8");
-//         const detections = JSON.parse(jsonContent).detections;
-//         const keyDefects = findKeyDefects(detections);
-//         const detectedDefectsCount = keyDefects.length;
-//         video.defectCount = detectedDefectsCount;               //update video defect count
-//         console.log(`🔍 Initial defects detected: ${detectedDefectsCount}`);
-//         // 📌 **New Step: Extract Frames Before Sending Response**
-//         const extractedFrames = await extractFrames(videoPath, keyDefects);
-//         project.videos[videoIndex].detectionResults = extractedFrames;
-//         await project.save(); // Save extracted frames in the database
-
-//         console.log(`✅ Extracted ${extractedFrames.length} frames before sending response.`);
-
-//         res.status(200).json({ message: "Review detected defects", detectedDefectsCount, keyDefects });
-//     } catch (error) {
-//         console.error("❌ Error in defect detection:", error);
-//         res.status(500).json({ error: "Failed to process defect detection" });
-//     }
-// };
 const detectDefects = async (req, res) => {
-    const { projectId, videoId, videoUrl, pipelineSections, assignedSections } = req.body;
+    const { projectId, videoId, assignedSections } = req.body;
 
-    if (!projectId || !videoId || !videoUrl) {
-        console.error("❌ Missing required fields:", { projectId, videoId, videoUrl });
-        return res.status(400).json({ error: "Missing projectId, videoId, or videoUrl" });
+    if (!projectId || !videoId) {
+        return res.status(400).json({ error: "Missing projectId or videoId" });
     }
 
     try {
-        console.log("🔍 Processing defect detection for project:", projectId, "Video ID:", videoId);
         
         const project = await Project.findById(projectId);
         if (!project) return res.status(404).json({ error: "Project not found." });
@@ -155,15 +96,12 @@ const detectDefects = async (req, res) => {
         let video = project.videos[videoIndex];
 
         // 🔥 **Fix: Ensure assignedSections is an array of strings**
-        console.log("📦 Received assignedSections:", assignedSections);
 
         // ✅ Store assigned sections in the video
         project.videos[videoIndex].assignedSections = Array.isArray(assignedSections) ? assignedSections.map(String) : [];
 
-        console.log("✅ Assigned Sections after processing:", project.videos[videoIndex].assignedSections);
         
         // 📥 **Read mock detection results from `dent.json`**
-        console.log("📥 Reading JSON detection results...");
         const jsonContent = await fsPromises.readFile(jsonFilePath, "utf8");
         const detections = JSON.parse(jsonContent).detections;
 
@@ -180,58 +118,34 @@ const detectDefects = async (req, res) => {
             frameNumber: defect.frame,
             defectType: defect.class_id && defectTypeMapping[defect.class_id] ? defectTypeMapping[defect.class_id] : "Unknown",
             confidence: defect.confidence,
-            framePath: path.join("server", "frames", `frame_${defect.frame}.jpg`),
-            from: assignedSections.length > 0 ? assignedSections[0].split("-")[0] : "Unknown",
-            to: assignedSections.length > 0 ? assignedSections[0].split("-")[1] : "Unknown",
+            framePath: path.join("server", "frames", `${videoId}_frame_${defect.frame}.jpg`),
+            from: video.assignedSections.length > 0 ? video.assignedSections[0].split("-")[0].trim() : "Unknown",
+            to: video.assignedSections.length > 0 ? (video.assignedSections[0].split("-")[1] || "Unknown").trim() : "Unknown",
             chainage: "0m",
             videoId: videoId,
           }));
 
-        console.log(`checking framepath for the detected defects:${detectedDefects[0].framePath} `)
         
-        console.log(`✅ Processed ${detectedDefects.length} detected defects.`);
         // 📸 **Extract frames for detected defects**
-        console.log("🎥 Extracting frames from video...");
-        let videoPath = videoUrl.startsWith("http") ? await downloadVideo(videoUrl, videoId) : videoUrl;
-        const extractedFrames = await extractFrames(videoPath, keyDefects);
+        const mediaPath = new URL(video.url, "http://local").pathname;
+        const filename = path.basename(mediaPath);
+        if (!mediaPath.startsWith("/uploads/") || !/^[a-zA-Z0-9_.-]+$/.test(filename)) return res.status(400).json({ error: "Reupload this video to use sample detection" });
+        const videoPath = path.join(__dirname, "..", "uploads", filename);
+        if (!fs.existsSync(videoPath)) return res.status(404).json({ error: "Video file unavailable; reupload the video" });
+        const extractedFrames = await extractFrames(videoPath, keyDefects, videoId);
         // 🛠 **Update the project with defect detection results**
         project.videos[videoIndex].defectCount = detectedDefects.length;
-        project.videos[videoIndex].detectionResults = detectedDefects;
+        project.videos[videoIndex].detectionResults = detectedDefects.map((d, i) => ({ ...d, framePath: extractedFrames[i].framePath }));
         project.videos[videoIndex].detectionCompleted = true; // ✅ Indicate detection is completed
         await project.save();
 
-        console.log("✅ Detection results saved successfully.");
-        res.status(200).json({ message: "Detection completed successfully", detectedDefects });
+        res.status(200).json({ message: "Sample/mock detection completed", sample: true, detectedDefects: project.videos[videoIndex].detectionResults });
     } catch (error) {
         console.error("❌ Error processing defect detection:", error);
         res.status(500).json({ error: "Failed to process defect detection" });
     }
 };
 
-
-export const extractDefectsAfterConfirmation = async (req, res) => {
-    const { projectId, videoId, confirmedDefectsCount } = req.body;
-    if (!projectId || !videoId || confirmedDefectsCount == null) {
-        return res.status(400).json({ error: "Missing projectId, videoId, or confirmed defect count" });
-    }
-    try {
-        console.log("🔍 Processing confirmed defects for project:", projectId, "Video ID:", videoId);
-        const project = await Project.findById(projectId);
-        if (!project) return res.status(404).json({ error: "Project not found." });
-        const videoIndex = project.videos.findIndex(v => v._id.toString() === videoId);
-        if (videoIndex === -1) return res.status(404).json({ error: "Video not found in project." });
-        let video = project.videos[videoIndex];
-        const selectedDefects = keyDefects.slice(0, confirmedDefectsCount);
-        const extractedFrames = await extractFrames(videoPath, selectedDefects);
-        project.videos[videoIndex].detectionResults = extractedFrames;
-        await project.save();
-        console.log(`✅ Confirmed ${confirmedDefectsCount} defects saved.`);
-        res.status(200).json({ videoTitle: video.title, detectionResults: extractedFrames });
-    } catch (error) {
-        console.error("❌ Error in defect confirmation:", error);
-        res.status(500).json({ error: "Failed to process confirmed defects" });
-    }
-};
 
 export { detectDefects };
 
@@ -256,13 +170,11 @@ export const getDetectionResults = async (req, res) => {
         }
 
         const formattedResults = video.detectionResults.map(defect => ({
-            ...defect,
+            ...defect.toObject(),
             framePath: `/frames/${path.basename(defect.framePath)}` // ✅ Convert to frontend URL
         }));
         
         
-        console.log(`checking framepath for the detected defects in get func :${formattedResults[0].framePath} `)
-        console.log("✅ Retrieved detection results:", formattedResults);
 
         res.status(200).json({
             videoTitle: video.title,
@@ -296,18 +208,25 @@ export const saveDetectionResults = async (req, res) => {
         }
 
         // ✅ Update the detection results and set a flag to indicate detection has been done
-        project.videos[videoIndex].detectionResults = detectionResults;
+        if (!Array.isArray(detectionResults) || detectionResults.length > 500) return res.status(400).json({ error: "Invalid detection results" });
+        const stored = project.videos[videoIndex].detectionResults;
+        const safeResults = detectionResults.map(d => {
+          const original = stored.find(x => String(x._id) === d._id || x.frameNumber === d.frameNumber);
+          return { videoId, frameNumber: d.frameNumber, defectType: d.defectType, confidence: d.confidence,
+            framePath: original?.framePath || "/frames/unavailable.jpg", from: d.from, to: d.to,
+            chainage: d.chainage, inspectorComments: d.inspectorComments };
+        });
+        project.videos[videoIndex].detectionResults = safeResults;
         project.videos[videoIndex].defectCount = detectionResults.length; // Update defect count
         project.videos[videoIndex].detectionCompleted = true; // ✅ Mark detection as completed
 
         // ✅ Save the updated project
         await project.save();
 
-        console.log("✅ Detection results saved successfully.");
         res.status(200).json({ message: "Detection results saved successfully." });
     } catch (error) {
         console.error("❌ Error saving detection results:", error);
-        res.status(500).json({ error: "Failed to save detection results." });
+        res.status(error.name === "ValidationError" ? 400 : 500).json({ error: "Failed to save detection results. Check required defect fields." });
     }
 };
 

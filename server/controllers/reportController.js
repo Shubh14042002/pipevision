@@ -13,6 +13,8 @@ export const generatePDF = async (req, res) => {
     // Get utility type from query string: "Sanitary", "Storm", or "Both"
     const utility = req.query.utility || "Both";
 
+    if (!["Sanitary", "Storm", "Both"].includes(utility)) return res.status(400).json({ error: "Invalid utility" });
+
     // Fetch project details with populated video data
     const project = await Project.findById(projectId).populate("videos");
     if (!project) {
@@ -31,14 +33,10 @@ export const generatePDF = async (req, res) => {
 
     // Create a new PDF document
     const doc = new PDFDocument({ size: "A4", margin: 50 });
-    const reportsDir = path.join(__dirname, "../reports");
-if (!fs.existsSync(reportsDir)) {
-  fs.mkdirSync(reportsDir, { recursive: true });
-}
-
-const filePath = path.join(reportsDir, `Project-Report-${projectId}.pdf`);
-const stream = fs.createWriteStream(filePath);
-doc.pipe(stream);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="Project-Report-${projectId}.pdf"`);
+    doc.on("error", () => res.destroy());
+    doc.pipe(res);
 
     // Add Report Header
 doc
@@ -54,7 +52,7 @@ doc
   .fontSize(9)
   .fillColor("#666")
   .text(
-    "Demo report generated from sample computer-vision output and sanitized project data.",
+    "Demo report generated from sample/mock computer-vision output.",
     50,
     75,
     {
@@ -173,7 +171,7 @@ doc
           .stroke();
 
         // Insert defect image
-        const imagePath = path.join(__dirname, "..", defect.framePath.replace(/^server[\\/]/, ""));
+        const imagePath = path.join(__dirname, "..", `frames/${path.basename(defect.framePath)}`);
         if (fs.existsSync(imagePath)) {
           doc.image(imagePath, currentX + 5, rowY + 5, { width: 80, height: 50 });
         } else {
@@ -206,13 +204,10 @@ doc
     // Finalize PDF
     doc.end();
 
-    stream.on("finish", () => {
-      res.download(filePath, `Project-Report-${projectId}.pdf`, (err) => {
-        if (err) console.error("Error sending PDF:", err);
-      });
-    });
   } catch (error) {
     console.error("Error generating PDF:", error);
-    res.status(500).send("Failed to generate PDF.");
+    if (res.headersSent) return res.destroy();
+    res.removeHeader("Content-Disposition");
+    res.status(500).json({ error: "Failed to generate PDF." });
   }
 };

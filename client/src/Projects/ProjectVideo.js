@@ -13,7 +13,7 @@ import axios from "axios"
 import { API } from '../api';
 
 const ProjectVideo = () => {
-  //const axiosPrivate = useAxios();
+  const axiosPrivate = useAxios();
 
   const [projectList, setProjectList] = useState([]);
   const [error, setError] = useState("");
@@ -28,18 +28,18 @@ const ProjectVideo = () => {
             },
           };
           try {
-            const { data } = await API.get("/api/project/getprojects", config);  
+            const { data } = await axiosPrivate.get("/api/project/getprojects", config);
             console.log(data)
             setProjectList(data.allProjects );
           } catch (error) {
             setError("You are not authorized please login");
           }
-    
+
         };
          fetchProjects()
-          
-        }, []); 
- 
+
+        }, []);
+
 
 
 
@@ -59,7 +59,7 @@ const ProjectVideo = () => {
 
        </>
     )
-    
+
 };
 
 export default ProjectVideo
