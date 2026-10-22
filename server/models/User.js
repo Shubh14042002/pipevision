@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 
 
 const UserSchema = new mongoose.Schema({
+  tokenVersion: { type: Number, default: 0, select: false },
   name: {
     type: String,
     trim: true,
@@ -25,7 +26,7 @@ const UserSchema = new mongoose.Schema({
         
         // Check if the email is already in use
         const existingUser = await this.constructor.findOne({ email: value });
-        if (existingUser) {
+        if (existingUser && String(existingUser._id) !== String(this._id)) {
           throw new Error("Email is already in use");
         }
       },
@@ -62,7 +63,7 @@ const UserSchema = new mongoose.Schema({
 
 UserSchema.pre("save", async function (next) {
   if (!this.isModified("password")) {
-    next();
+    return next();
   }
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);

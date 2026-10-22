@@ -1,3 +1,5 @@
+import usePrivateMedia from "../hooks/usePrivateMedia";
+import useAxios from "../api/useAxiosPrivate";
 import React, { useEffect, useState } from "react";
 import {
   Box,
@@ -11,31 +13,15 @@ import {
 } from "@mui/material";
 import { ArrowBack, ArrowForward, Add } from "@mui/icons-material";
 import { useParams, useLocation, useNavigate} from "react-router-dom";
-import ReactPlayer from "react-player";
-import { API, API_BASE_URL, LOCAL_API_BASE_URL } from "../api";
+import InspectionVideoPlayer from "../components/InspectionVideoPlayer";
 import SaveIcon from '@mui/icons-material/Save';
 
-const getMediaUrl = (pathOrUrl) => {
-  if (!pathOrUrl) return "";
-
-  // If the database has an old local URL, convert the host to the deployed API URL.
-  if (pathOrUrl.startsWith(LOCAL_API_BASE_URL)) {
-  return pathOrUrl.replace(LOCAL_API_BASE_URL, API_BASE_URL);
-}
-
-  // If it is already a full URL, use it as-is.
-  if (/^https?:\/\//i.test(pathOrUrl)) {
-    return pathOrUrl;
-  }
-
-  // If it is a relative backend path like /frames/frame_47.jpg
-  return `${API_BASE_URL}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
-};
-
 const ProjectDefectDetection = () => {
+  const axiosPrivate = useAxios();
   const { id } = useParams();
   const location = useLocation();
-  const { videoId, videoTitle, coveredSections = []} = location.state || {}; // Covered sections from ProjectHome.js
+  const { videoTitle, coveredSections = []} = location.state || {};
+  const videoId = new URLSearchParams(location.search).get("videoId") || location.state?.videoId; // Covered sections from ProjectHome.js
   const navigate = useNavigate();
   const [projectDetails, setProjectDetails] = useState({});
   const [videoDetails, setVideoDetails] = useState({});
@@ -45,10 +31,10 @@ const ProjectDefectDetection = () => {
   const [comments, setComments] = useState({});
   const [chainage, setChainage] = useState({});
   const [selectedSections, setSelectedSections] = useState([]);
-  const [manualDefects, setManualDefects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 // NEW: Track current defect's chainage & section
+const frameSource = usePrivateMedia(detectionResults[currentDefectIndex]?.framePath, id);
 const [currentChainage, setCurrentChainage] = useState("");
 const [currentSection, setCurrentSection] = useState("");
 
@@ -66,7 +52,7 @@ useEffect(() => {
   const fetchProjectAndVideoDetails = async () => {
       try {
           console.log(`📡 Fetching project details for ID: ${id}`);
-          const projectRes = await API.post("/api/project/projectinfo", { id });
+          const projectRes = await axiosPrivate.post("/api/project/projectinfo", { id });
           console.log("✅ Project response:", projectRes.data);
 
           setProjectDetails(projectRes.data.projectInfo);
@@ -75,6 +61,7 @@ useEffect(() => {
           if (!selectedVideo) {
               console.error("❌ Video not found in project.");
               setError("Video not found in project.");
+              setLoading(false);
               return;
           }
 
@@ -83,12 +70,13 @@ useEffect(() => {
           setSelectedSections(selectedVideo.assignedSections || []);
 
           console.log("📡 Fetching detection results...");
-          const { data } = await API.get(`/api/detection/results?projectId=${id}&videoId=${videoId}`);
+          const { data } = await axiosPrivate.get(`/api/detection/results?projectId=${id}&videoId=${videoId}`);
 
           console.log("✅ Detection API response:", data);
           if (!data.detectionResults || data.detectionResults.length === 0) {
               console.error("❌ No detection results received!");
               setError("No detection results available.");
+              setLoading(false);
               return;
           }
 
@@ -125,7 +113,11 @@ useEffect(() => {
   
 
   const handleDefectsConfirmation = () => {
+    if (!Number.isInteger(confirmedDefects) || confirmedDefects < 0 || confirmedDefects > detectionResults.length) {
+      alert("Enter a valid number of defects to retain."); return;
+    }
     setDetectionResults(detectionResults.slice(0, confirmedDefects));
+    setCurrentDefectIndex(0);
   };
 
   const handleCommentChange = (frameNumber, value) => {
@@ -188,19 +180,11 @@ useEffect(() => {
   
 
   const addManualDefect = () => {
-    setManualDefects([
-      ...manualDefects,
-      {
-        frameNumber: `Manual-${manualDefects.length + 1}`,
-        defectType: "New Defect",
-        confidence: "N/A",
-        framePath: "",
-        from: "",
-        to: "",
-        chainage: "",
-        videoId: videoId,
-      },
-    ]);
+    const nextFrame = Math.max(0, ...detectionResults.map(d => d.frameNumber)) + 1;
+    const [from = "Unknown", to = "Unknown"] = (selectedSections[0] || "Unknown-Unknown").split("-");
+    setDetectionResults(prev => [...prev, { videoId, frameNumber: nextFrame, defectType: "Manual observation", confidence: 0,
+      framePath: "/frames/unavailable.jpg", from, to, chainage: "0m", inspectorComments: "Manually added; no sample confidence or frame" }]);
+    setCurrentDefectIndex(detectionResults.length);
   };
 
   const nextDefect = () => {
@@ -216,7 +200,7 @@ useEffect(() => {
   };
   const handleSaveDetectionResults = async () => {
     try {
-        await API.post("/api/detection/saveResults", {
+        await axiosPrivate.post("/api/detection/saveResults", {
             projectId: id,
             videoId: videoId,
             detectionResults: detectionResults, // ✅ Save confirmed results
@@ -256,14 +240,14 @@ return (
           <Typography><strong>Title:</strong> {videoDetails.title}</Typography>
           <Typography gutterBottom><strong>Notes:</strong> {videoDetails.notes}</Typography>
           <Box sx={{ my: 2 }}>
-            <ReactPlayer url={videoDetails.url} controls width="100%" />
+            <InspectionVideoPlayer url={videoDetails.url} projectId={id} />
           </Box>
         </Paper>
 
         {/* Confirm Detected Defects */}
         <Paper elevation={3} sx={{ p: 4, mb: 4, borderRadius: 3 }}>
           <Typography variant="h6" sx={{ color: "green", fontWeight: 500 }}>
-            "{videoTitle}" successfully detected {detectionResults.length} defects.
+            Sample/mock output for "{videoTitle || videoDetails.title}": {detectionResults.length} defects for review.
           </Typography>
           <TextField
             label="Confirm Detected Defects"
@@ -304,11 +288,11 @@ return (
             </Typography>
             <Box sx={{ my: 2 }}>
              <img
-              src={getMediaUrl(detectionResults[currentDefectIndex]?.framePath)}
+              src={frameSource}
               alt={`Frame ${detectionResults[currentDefectIndex]?.frameNumber}`}
               width="100%"
               style={{ maxHeight: "400px", objectFit: "contain" }}
-            />
+            /> : <Typography>Frame unavailable.</Typography>}
             </Box>
             <Box sx={{ display: "flex", justifyContent: "space-between", mb: 2 }}>
               <IconButton onClick={prevDefect} disabled={currentDefectIndex === 0}>

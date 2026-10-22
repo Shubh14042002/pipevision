@@ -1,78 +1,7 @@
-// // /server/routes/project.js
-// import express from 'express';
-// const router = express.Router();
-
-// // Import controllers from our unified controller file
-// import { 
-//   getProjects, 
-//   getProjectInfoByID, 
-//   createProject, 
-//   deleteProject, 
-//   deleteVideo, 
-//   addVideo, 
-//   updateProjectStatus, 
-//   addUserPermissionToProject, 
-//   deleteUserPermissionFromProject, 
-//   // addMultipleVideos, 
-//   generatePipelineSections 
-// } from "../controllers/project.js";
-
-// // S3 Upload configuration using multer-s3 (from main branch)
-// import multer from 'multer';
-// import multerS3 from 'multer-s3';
-// import s3 from '../config/s3.js';
-
-// const upload = multer({
-//   storage: multerS3({
-//     s3: s3,
-//     bucket: process.env.S3_BUCKET_NAME,
-//     // Optionally set acl: 'public-read' if your bucket settings allow it.
-//     // acl: 'public-read',
-//     key: (req, file, cb) => {
-//       // Create a unique file name – e.g. "videos/video-<timestamp>-<random>.<ext>"
-//       const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-//       const ext = file.originalname.split('.').pop();
-//       cb(null, `videos/video-${uniqueSuffix}.${ext}`);
-//     },
-//   }),
-// });
-
-// // ---------- Main Branch Endpoints ----------
-// router.get('/getprojects', getProjects);
-// router.post('/projectinfo', getProjectInfoByID);
-// router.post('/createproject', createProject);
-// router.post('/deleteproject', deleteProject);
-// router.post('/deletevideo', deleteVideo);
-// router.post('/addVideo', addVideo);
-// router.post('/updateStatus', updateProjectStatus);
-// router.post('/addPerm', addUserPermissionToProject);
-// router.post('/deletePerm', deleteUserPermissionFromProject);
-
-// // S3 upload endpoint – returns S3 URL and object key.
-// router.post('/uploadVideo', upload.single('videoFile'), async (req, res) => {
-//   try {
-//     if (!req.file) {
-//       return res.status(400).json({ error: 'No file uploaded' });
-//     }
-//     // Multer-S3 provides the final URL and key.
-//     const videoUrl = req.file.location;
-//     const s3Key = req.file.key;
-//     return res.json({ success: true, url: videoUrl, key: s3Key });
-//   } catch (error) {
-//     console.error(error);
-//     return res.status(500).json({ error: 'Upload failed' });
-//   }
-// });
-
-// // ---------- Shubh Branch Endpoints ----------
-// // router.post('/addMultipleVideos', addMultipleVideos);
-// router.post('/generate-sections', generatePipelineSections);
-
-// export default router;
-
-
 import express from 'express';
 const router = express.Router();
+import { authenticate, roles, authorizeProject, managePermissions } from "../middleware/auth.js";
+router.use(authenticate);
 
 import { 
   getProjects, 
@@ -89,6 +18,9 @@ import {
 
 // Use multer with diskStorage
 import multer from 'multer';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const probeFile = promisify(execFile);
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -107,31 +39,40 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     const ext = path.extname(file.originalname);
-    cb(null, `video-${uniqueSuffix}${ext}`);
+    cb(null, `${req.project._id}-video-${uniqueSuffix}${ext}`);
   },
 });
 
-const upload = multer({ storage });
+const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => cb(null, /\.(mp4|mov|webm)$/i.test(file.originalname) && ["video/mp4", "video/quicktime", "video/webm"].includes(file.mimetype))
+});
 
 // ---------- Endpoints ----------
 router.get('/getprojects', getProjects);
-router.post('/projectinfo', getProjectInfoByID);
-router.post('/createproject', createProject);
-router.post('/deleteproject', deleteProject);
-router.post('/deletevideo', deleteVideo);
-router.post('/addVideo', addVideo);
-router.post('/updateStatus', updateProjectStatus);
-router.post('/addPerm', addUserPermissionToProject);
-router.post('/deletePerm', deleteUserPermissionFromProject);
+router.post('/projectinfo', authorizeProject, getProjectInfoByID);
+router.post('/createproject', roles("admin", "manager"), createProject);
+router.post('/deleteproject', authorizeProject, roles("admin", "manager"), deleteProject);
+router.post('/deletevideo', authorizeProject, roles("admin", "manager"), deleteVideo);
+router.post('/addVideo', authorizeProject, roles("admin", "manager"), addVideo);
+router.post('/updateStatus', authorizeProject, roles("admin", "manager"), updateProjectStatus);
+router.post('/addPerm', authorizeProject, managePermissions, roles("admin", "manager"), addUserPermissionToProject);
+router.post('/deletePerm', authorizeProject, managePermissions, roles("admin", "manager"), deleteUserPermissionFromProject);
 
 // Local file upload endpoint:
-router.post('/uploadVideo', upload.single('videoFile'), async (req, res) => {
+router.post('/uploadVideo', roles("admin", "manager"), authorizeProject, upload.single('videoFile'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    // Build the full URL using the request's protocol and host.
-    const videoUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+    try {
+      const { stdout } = await probeFile("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", req.file.path], { timeout: 15000, maxBuffer: 1024 * 1024 });
+      const metadata = JSON.parse(stdout);
+      if (!metadata.streams?.some(stream => stream.codec_type === "video") || !(Number(metadata.format?.duration) > 0)) throw new Error("Invalid video");
+    } catch {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({ error: "Video could not be validated. Use a valid MP4, MOV, or WebM; the server requires FFprobe." });
+    }
+    const videoUrl = `/uploads/${req.file.filename}`;
     const localKey = req.file.filename;
     return res.json({ success: true, url: videoUrl, s3Key: localKey });
   } catch (error) {
@@ -141,7 +82,18 @@ router.post('/uploadVideo', upload.single('videoFile'), async (req, res) => {
 });
 
 
+// Explicit cleanup for an upload whose metadata could not be attached.
+router.post('/discardUpload', roles("admin", "manager"), authorizeProject, async (req, res, next) => {
+  const key = req.body.s3Key;
+  if (typeof key !== "string" || path.basename(key) !== key || !key.startsWith(`${req.project._id}-video-`)) return res.status(400).json({ error: "Invalid upload key" });
+  if (req.project.videos.some(v => v.s3Key === key)) return res.status(409).json({ error: "Upload is already attached" });
+  try {
+    await fs.promises.unlink(path.join(__dirname, '..', 'uploads', key)).catch(err => { if (err.code !== "ENOENT") throw err; });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // Sections generation endpoint from shubh
-router.post('/generate-sections', generatePipelineSections);
+router.post('/generate-sections', authorizeProject, roles("admin", "manager"), generatePipelineSections);
 
 export default router;

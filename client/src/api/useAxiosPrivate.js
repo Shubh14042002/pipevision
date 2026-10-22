@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { useContext, useMemo } from "react";
 import axios from "axios";
 import { refresh, API_BASE_URL } from "./index";
 import AuthContext from "../context/AuthContext";
@@ -7,6 +7,7 @@ import AuthContext from "../context/AuthContext";
 const useAxios = () => {
   const { setUser, setAuthToken } = useContext(AuthContext);
 
+  return useMemo(() => {
   const axiosInstance = axios.create({
     baseURL: API_BASE_URL,
     headers: {
@@ -16,6 +17,12 @@ const useAxios = () => {
     withCredentials: true,
   });
 
+  axiosInstance.interceptors.request.use(config => {
+    const token = localStorage.getItem("authToken");
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+    else delete config.headers.Authorization;
+    return config;
+  });
   axiosInstance.interceptors.response.use(
     (res) => res,
     async (error) => {
@@ -47,6 +54,7 @@ const useAxios = () => {
   );
 
   return axiosInstance;
+  }, [setUser, setAuthToken]);
 };
 
 export default useAxios;

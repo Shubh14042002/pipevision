@@ -1,16 +1,10 @@
-// /server/controllers/project.js
+import { projectFilter } from "../middleware/auth.js";
 import ErrorResponse from "../utils/errorResponse.js";
-import User from "../models/User.js";
 import Project from "../models/Project.js";
-import jwt from "jsonwebtoken";
-import asyncHandler from "express-async-handler";
-import axios from "axios";
 import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
-import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
-import s3 from '../config/s3.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,10 +12,9 @@ dotenv.config({
   path: path.join(__dirname, '..', '.env')
 });
 
-// ------------------------ GET PROJECTS ------------------------
 export const getProjects = async (req, res, next) => {
   try {
-    const allProjects = await Project.find();
+    const allProjects = await Project.find(projectFilter(req.user));
     res.status(200).json({ allProjects });
   } catch (err) {
     if (err.name === "TokenExpiredError") {
@@ -29,33 +22,29 @@ export const getProjects = async (req, res, next) => {
     } else if (err.name === "JsonWebTokenError") {
       return next(new ErrorResponse("Malformed JWT token", 500));
     } else {
-      return next(new ErrorResponse("Not authorized to access this route", err, 401));
+      return next(new ErrorResponse("Not authorized to access this route", 500));
     }
   }
 };
 
-// ------------------------ GET PROJECT INFO BY ID ------------------------
 export const getProjectInfoByID = async (req, res, next) => {
   const { id } = req.body;
-  console.log("hit", id);
+
   try {
     const projectInfo = await Project.findById(id);
     res.status(200).json({ projectInfo });
-    console.log(projectInfo);
+
   } catch (err) {
     if (err.name === "TokenExpiredError") {
       return next(new ErrorResponse("Token expired", 401));
     } else if (err.name === "JsonWebTokenError") {
       return next(new ErrorResponse("Malformed JWT token", 500));
     } else {
-      return next(new ErrorResponse("Not authorized to access this route", err, 401));
+      return next(new ErrorResponse("Not authorized to access this route", 500));
     }
   }
 };
 
-// ------------------------ CREATE PROJECT ------------------------
-// Merged: uses main fields plus extra fields from shubh (projectOwner, contractor, location)
-// Also initializes pipelineSections (from shubh)
 export const createProject = async (req, res, next) => {
   try {
     const {
@@ -65,13 +54,13 @@ export const createProject = async (req, res, next) => {
       dateOpened,
       projectOwner,
       contractor,
-      location,
-      videos
+      location
     } = req.body;
 
-    if (!title) return res.status(400).json({ error: "Title is required" });
+    if (typeof title !== "string" || !title.trim()) return res.status(400).json({ error: "Title is required" });
 
     const project = await Project.create({
+      createdBy: req.user._id,
       title,
       description,
       status,
@@ -79,8 +68,7 @@ export const createProject = async (req, res, next) => {
       projectOwner,
       contractor,
       location,
-      videos: videos || [],
-      // If your unified schema uses pipelineSections, initialize as empty arrays:
+      videos: [],
       pipelineSections: { sanitary: [], storm: [] },
     });
 
@@ -93,66 +81,40 @@ export const createProject = async (req, res, next) => {
       return next(new ErrorResponse("Malformed JWT token", 500));
     } else if(err.code === 11000) {
       return next(new ErrorResponse("Duplicate key error", 409));
+    } else if (err.name === "ValidationError") {
+      return res.status(400).json({ error: err.message });
     } else {
-      return next(new ErrorResponse("Not authorized to access this route", err, 401));
+      return next(new ErrorResponse("Failed to create project", 500));
     }
   }
 };
 
-// ------------------------ DELETE VIDEO ------------------------
-// export const deleteVideo = async (req, res, next) => {
-//   const { projectId, videoId, s3Key } = req.body;
-//   console.log("Deleting video with ID:", videoId);
-//   try {
-//     // Delete from S3 if s3Key is provided
-//     if (s3Key) {
-//       console.log('Deleting from S3:', s3Key);
-//       await s3.send(new DeleteObjectCommand({
-//         Bucket: process.env.S3_BUCKET_NAME,
-//         Key: s3Key
-//       }));
-//     }
-//     // Remove the video from the project's videos array
-//     const project = await Project.findByIdAndUpdate(
-//       projectId,
-//       { $pull: { videos: { _id: videoId } } },
-//       { new: true }
-//     );
-//     console.log("After deletion, project:", project);
-//     if (!project) {
-//       return res.status(404).json({ message: 'Project not found' });
-//     }
-//     return res.status(200).json({ success: true, message: "Video deleted successfully", project });
-//   } catch (err) {
-//     console.error("Error deleting video:", err);
-//     return next(new ErrorResponse("Error deleting video", 500));
-//   }
-// };
 
 export const deleteVideo = async (req, res, next) => {
-  const { projectId, videoId, s3Key } = req.body;  // s3Key now holds the local filename
-  console.log("Deleting video with ID:", videoId);
+  const { projectId, videoId } = req.body;
+  const storedVideo = req.project.videos.id(videoId);
+  if (!storedVideo) return res.status(404).json({ error: "Video not found" });
+  const s3Key = storedVideo.s3Key;
+
   try {
-    // Delete from local filesystem if s3Key exists
-    if (s3Key) {
-      const filePath = path.join(__dirname, '..', 'uploads', s3Key);
-      fs.unlink(filePath, (err) => {
-        if (err) {
-          console.error("Error deleting file:", err);
-        } else {
-          console.log("Successfully deleted local file:", filePath);
-        }
-      });
-    }
-    // Remove the video from the project's videos array in MongoDB
     const project = await Project.findByIdAndUpdate(
       projectId,
       { $pull: { videos: { _id: videoId } } },
       { new: true }
     );
-    console.log("After deletion, project:", project);
+
     if (!project) {
       return res.status(404).json({ message: 'Project not found' });
+    }
+    if (s3Key && path.basename(s3Key) === s3Key) {
+      const filePath = path.join(__dirname, '..', 'uploads', s3Key);
+      fs.unlink(filePath, (err) => {
+        if (err) {
+          console.error("Error deleting file:", err);
+        } else {
+
+        }
+      });
     }
     return res.status(200).json({ success: true, message: "Video deleted successfully", project });
   } catch (err) {
@@ -161,92 +123,35 @@ export const deleteVideo = async (req, res, next) => {
   }
 };
 
-// ------------------------ ADD VIDEO ------------------------
-// Merged: if req.body includes utilityType, assume report-generation flow (shubh),
-// otherwise assume a standard S3-upload video (main).
-// export const addVideo = async (req, res, next) => {
-//   try {
-//     // Destructure common fields. For S3-upload, s3Key will be present.
-//     const { projectId, title, notes, url, s3Key, utilityType, assignedSections } = req.body;
-//     // Check required fields for both flows.
-//     if (!projectId || !title || !url) {
-//       return res.status(400).json({ error: "Project ID, Title, and URL are required." });
-//     }
-//     // If utilityType is provided, validate it for report-generation
-//     if (utilityType && !["Sanitary", "Storm"].includes(utilityType)) {
-//       return res.status(400).json({ error: "Invalid utility type. Must be 'Sanitary' or 'Storm'." });
-//     }
-//     // Fetch project
-//     const project = await Project.findById(projectId);
-//     if (!project) {
-//       return res.status(404).json({ error: "Project not found." });
-//     }
-
-//     let newVideo = {};
-//     if (utilityType) {
-//       // Shubh branch style: include report generation fields.
-//       // Optionally, check for pipeline sections.
-//       newVideo = {
-//         title,
-//         notes: notes || "",
-//         url,
-//         utilityType,
-//         assignedSections: assignedSections || [],
-//         detectionResults: [],
-//         detectionCompleted: false,
-//       };
-//     } else {
-//       // Main branch style: include s3Key.
-//       newVideo = {
-//         title,
-//         notes: notes || "",
-//         url,
-//         s3Key,
-//       };
-//     }
-
-//     // Append new video to project.videos
-//     project.videos.push(newVideo);
-//     await project.save();
-
-//     // Retrieve the newly added video from the project's videos array.
-//     const savedVideo = project.videos[project.videos.length - 1];
-//     console.log("Video added to project:", savedVideo);
-//     res.status(200).json({
-//       success: true,
-//       message: "Video added successfully",
-//       // Optionally return the full updated project,
-//       // or just the new video.
-//       newVideo: savedVideo,
-//       project,
-//     });
-//   } catch (err) {
-//     console.error("Error adding video:", err);
-//     return next(new ErrorResponse("Error adding video", 500));
-//   }
-// };
-
 export const addVideo = async (req, res, next) => {
   try {
     const { projectId, title, notes, url, s3Key, utilityType, assignedSections } = req.body;
-    if (!projectId || !title || !url) {
-      return res.status(400).json({ error: "Project ID, Title, and URL are required." });
+
+    if (!projectId || typeof title !== "string" || !title.trim() || !url) {
+      return res.status(400).json({ error: "Project ID, Video Title, and URL are required." });
     }
-    if (utilityType && !["Sanitary", "Storm"].includes(utilityType)) {
-      return res.status(400).json({ error: "Invalid utility type. Must be 'Sanitary' or 'Storm'." });
+    if (!["Sanitary", "Storm"].includes(utilityType)) {
+      return res.status(400).json({ error: "Select a utility type: Sanitary or Storm." });
     }
+
     const project = await Project.findById(projectId);
     if (!project) {
       return res.status(404).json({ error: "Project not found." });
     }
-    // Always include s3Key and utilityType (defaulting to empty string if not provided)
+
+    if (typeof s3Key !== "string" || !s3Key.startsWith(`${project._id}-video-`) ||
+        path.basename(s3Key) !== s3Key || !fs.existsSync(path.join(__dirname, "..", "uploads", s3Key))) {
+      return res.status(400).json({ error: "Upload a video for this project before attaching it" });
+    }
+    const existing = project.videos.find(v => v.s3Key === s3Key);
+    if (existing) return res.json({ success: true, newVideo: existing, project });
     const newVideo = {
-      title,
+      title: title.trim(),
       notes: notes || "",
-      url,
-      s3Key: s3Key || "",
-      utilityType: utilityType || "",
-      assignedSections: assignedSections || [],
+      url: `/uploads/${s3Key}`,
+      s3Key,
+      utilityType, // Never default an enum to an invalid empty string.
+      assignedSections: Array.isArray(assignedSections) ? assignedSections : [],
       detectionResults: [],
       detectionCompleted: false,
     };
@@ -255,7 +160,6 @@ export const addVideo = async (req, res, next) => {
     await project.save();
 
     const savedVideo = project.videos[project.videos.length - 1];
-    console.log("Video added to project:", savedVideo);
     res.status(200).json({
       success: true,
       message: "Video added successfully",
@@ -264,12 +168,14 @@ export const addVideo = async (req, res, next) => {
     });
   } catch (err) {
     console.error("Error adding video:", err);
+    if (err.name === "ValidationError") {
+      return res.status(400).json({ error: err.message });
+    }
     return next(new ErrorResponse("Error adding video", 500));
   }
 };
 
 
-// ------------------------ UPDATE PROJECT STATUS ------------------------
 export const updateProjectStatus = async (req, res, next) => {
   const { projectId, status } = req.body;
   try {
@@ -287,12 +193,11 @@ export const updateProjectStatus = async (req, res, next) => {
     } else if (err.name === "JsonWebTokenError") {
       return next(new ErrorResponse("Malformed JWT token", 500));
     } else {
-      return next(new ErrorResponse("Not authorized to access this route", err, 401));
+      return next(new ErrorResponse("Not authorized to access this route", 500));
     }
   }
 };
 
-// ------------------------ ADD USER PERMISSION TO PROJECT ------------------------
 export const addUserPermissionToProject = async (req, res, next) => {
   const { projectId, email, name, hasPermission } = req.body;
   try {
@@ -313,12 +218,11 @@ export const addUserPermissionToProject = async (req, res, next) => {
     } else if (err.name === "JsonWebTokenError") {
       return next(new ErrorResponse("Malformed JWT token", 500));
     } else {
-      return next(new ErrorResponse("Not authorized to access this route", err, 401));
+      return next(new ErrorResponse("Not authorized to access this route", 500));
     }
   }
 };
 
-// ------------------------ DELETE USER PERMISSION FROM PROJECT ------------------------
 export const deleteUserPermissionFromProject = async (req, res, next) => {
   const { projectId, email } = req.body;
   try {
@@ -339,91 +243,51 @@ export const deleteUserPermissionFromProject = async (req, res, next) => {
     } else if (err.name === "JsonWebTokenError") {
       return next(new ErrorResponse("Malformed JWT token", 500));
     } else {
-      return next(new ErrorResponse("Not authorized to access this route", err, 401));
+      return next(new ErrorResponse("Not authorized to access this route", 500));
     }
   }
 };
 
-// ------------------------ DELETE PROJECT (INCLUDING ALL VIDEOS) ------------------------
-// export const deleteProject = async (req, res, next) => {
-//   const { projectId } = req.body;
-//   console.log("Deleting project with ID:", projectId);
-//   try {
-//     const project = await Project.findById(projectId);
-//     if (!project) {
-//       console.log("Project not found");
-//       return next(new ErrorResponse("Project not found", 404));
-//     }
-//     console.log("Found project:", project);
 
-//     // Loop over all videos and delete from S3 if s3Key exists.
-//     for (const vid of project.videos) {
-//       if (vid.s3Key) {
-//         console.log("Deleting from S3:", vid.s3Key);
-//         try {
-//           await s3.send(new DeleteObjectCommand({
-//             Bucket: process.env.S3_BUCKET_NAME,
-//             Key: vid.s3Key,
-//           }));
-//           console.log("Successfully deleted S3 object:", vid.s3Key);
-//         } catch (deleteErr) {
-//           console.error(`Error deleting S3 object ${vid.s3Key}:`, deleteErr);
-//         }
-//       }
-//     }
 
-//     // Finally, delete the project document from MongoDB.
-//     await Project.deleteOne({ _id: projectId });
-//     console.log("Project successfully deleted from MongoDB");
 
-//     res.status(200).json({ success: true, message: "Project and all videos deleted" });
-//   } catch (err) {
-//     console.error("Error in deleteProject:", err);
-//     return next(new ErrorResponse("Not authorized to access this route", err, 401));
-//   }
-// };
 
 export const deleteProject = async (req, res, next) => {
   const { projectId } = req.body;
-  console.log("Deleting project with ID:", projectId);
+
   try {
     const project = await Project.findById(projectId);
     if (!project) {
-      console.log("Project not found");
+
       return next(new ErrorResponse("Project not found", 404));
     }
-    console.log("Found project:", project);
 
-    // Loop over all videos and delete local files if s3Key exists
+    await Project.deleteOne({ _id: projectId });
     for (const vid of project.videos) {
-      if (vid.s3Key) {
+      if (vid.s3Key && path.basename(vid.s3Key) === vid.s3Key) {
         const filePath = path.join(__dirname, '..', 'uploads', vid.s3Key);
         try {
           fs.unlinkSync(filePath);
-          console.log("Successfully deleted local file:", filePath);
+
         } catch (deleteErr) {
           console.error(`Error deleting local file ${vid.s3Key}:`, deleteErr);
         }
       }
     }
-    // Delete the project document from MongoDB
-    await Project.deleteOne({ _id: projectId });
-    console.log("Project successfully deleted from MongoDB");
+
     res.status(200).json({ success: true, message: "Project and all videos deleted" });
   } catch (err) {
     console.error("Error in deleteProject:", err);
-    return next(new ErrorResponse("Not authorized to access this route", err, 401));
+    return next(new ErrorResponse("Not authorized to access this route", 500));
   }
 };
 
 
-// ------------------------ GENERATE PIPELINE SECTIONS ------------------------
-// (Report generation utility from shubh)
 export const generatePipelineSections = async (req, res) => {
   try {
     const { projectId, utilityType, estimatedSections } = req.body;
 
-    if (!projectId || !utilityType || !estimatedSections || estimatedSections < 2) {
+    if (!projectId || !utilityType || !["Sanitary", "Storm"].includes(utilityType) || !Number.isInteger(estimatedSections) || estimatedSections < 2 || estimatedSections > 1000) {
       return res.status(400).json({ error: "Invalid input data" });
     }
 

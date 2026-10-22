@@ -59,7 +59,6 @@ const RegisterScreen = () => {
   // Form fields
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState("Regular");
   const [password, setPassword] = useState("");
   const [confirmpassword, setConfirmPassword] = useState("");
 
@@ -115,7 +114,7 @@ const RegisterScreen = () => {
     try {
       const { data } = await API.post(
         "/api/auth/register",
-        { name, role, email, password },
+        { name, email, password },
         { withCredentials: true }
       );
       localStorage.setItem("authToken", data.accessToken);
@@ -221,23 +220,6 @@ const RegisterScreen = () => {
                 />
               </Grid>
 
-              {/* Role Selection */}
-              <Grid item xs={12}>
-                <FormControl fullWidth>
-                  <InputLabel id="role-label">Select Role</InputLabel>
-                  <Select
-                    labelId="role-label"
-                    id="role"
-                    value={role}
-                    label="Select Role"
-                    onChange={(e) => setRole(e.target.value)}
-                  >
-                    <MenuItem value="user">Regular</MenuItem>
-                    <MenuItem value="manager">Manager</MenuItem>
-                    <MenuItem value="admin">Admin</MenuItem>
-                  </Select>
-                </FormControl>
-              </Grid>
             </Grid>
 
             {/* Display final error from submission (or backend) */}

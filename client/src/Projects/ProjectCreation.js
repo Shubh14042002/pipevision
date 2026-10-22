@@ -12,12 +12,11 @@ import {
   Paper,
   Grid
 } from '@mui/material';
-import { Add, Delete } from '@mui/icons-material';
+import { Delete } from '@mui/icons-material';
 import { DatePicker } from '@mui/x-date-pickers';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import dayjs from 'dayjs';
-import { API } from '../api';
 import { useNavigate } from 'react-router-dom';
 import useAxios from '../api/useAxiosPrivate';
 
@@ -25,14 +24,12 @@ const ProjectCreation = () => {
   const axiosPrivate = useAxios();
   const navigate = useNavigate();
 
-  // State for file upload logic
-  const [file, setFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
-
-  // Role for permission checking
+  // Hold selected files in browser memory until a project ID exists.
+  // This prevents orphaned uploads when the project form is invalid.
+  const [pendingVideos, setPendingVideos] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
   const [role, setRole] = useState("");
 
-  // Combined project info includes extra fields from shubh
   const [projectInfo, setProjectInfo] = useState({
     title: '',
     description: '',
@@ -41,17 +38,10 @@ const ProjectCreation = () => {
     projectOwner: '',
     contractor: '',
     location: '',
-    videos: [],
   });
 
-  // Video state – now includes a `utilityType` field
-  const [video, setVideo] = useState({ 
-    title: '', 
-    notes: '', 
-    url: '', 
-    s3Key: '', 
-    utilityType: ''  // <-- ADDED UTILITY TYPE FIELD
-  });
+  // These fields apply to the next video placed in the queue.
+  const [video, setVideo] = useState({ title: '', notes: '', utilityType: '' });
 
   // Fetch user role on mount
   useEffect(() => {
@@ -67,25 +57,86 @@ const ProjectCreation = () => {
     fetchPrivateData();
   }, [axiosPrivate]);
 
-  // Create project – posts all fields from projectInfo
+  // One button, three API stages: create project -> upload each file -> attach each video.
+  // The project remains valid even if a later video upload fails.
   const createProject = async () => {
+    if (submitting) return;
+    if (!projectInfo.title.trim()) {
+      alert('Please enter a project title.');
+      return;
+    }
+    if (role !== 'manager' && role !== 'admin') {
+      alert('Only managers or admins can create projects.');
+      return;
+    }
+
+    let createdProjectId = null;
+    let linkedCount = 0;
+    setSubmitting(true);
+
     try {
-      const config = { headers: { "Content-Type": "application/json" } };
+      // 1. Create the project WITHOUT nested videos. The server returns its ID.
       const payload = {
-        title: projectInfo.title,
-        description: projectInfo.description,
-        status: projectInfo.status,
-        dateOpened: projectInfo.dateOpened.toISOString(),
-        projectOwner: projectInfo.projectOwner,
-        contractor: projectInfo.contractor,
-        location: projectInfo.location,
-        videos: projectInfo.videos, // Videos now include utilityType
+        ...projectInfo,
+        title: projectInfo.title.trim(),
+        dateOpened: projectInfo.dateOpened?.toISOString() || new Date().toISOString(),
+        videos: [],
       };
-      const { data } = await API.post("/api/project/createproject", payload, config);
-      navigate(`/project/${data}`);
+      const { data: projectId } = await axiosPrivate.post(
+        '/api/project/createproject',
+        payload
+      );
+      createdProjectId = projectId;
+
+      // 2. Upload the queued video files, then attach their metadata using the project ID.
+      for (const queued of pendingVideos) {
+        const formData = new FormData();
+        formData.append('videoFile', queued.file);
+
+        // Axios adds the correct multipart boundary automatically.
+        const { data: upload } = await axiosPrivate.post(
+          `/api/project/uploadVideo?projectId=${createdProjectId}`,
+          formData,
+          // Override the private Axios instance's application/json default.
+          // Axios/browser provides the multipart boundary for the video upload.
+          { headers: { 'Content-Type': 'multipart/form-data' } }
+        );
+        if (!upload.success || !upload.url) {
+          throw new Error('The video upload did not return a usable URL.');
+        }
+
+        try {
+        await axiosPrivate.post('/api/project/addVideo', {
+          projectId: createdProjectId,
+          title: queued.title,
+          notes: queued.notes,
+          utilityType: queued.utilityType,
+          url: upload.url,
+          s3Key: upload.s3Key,
+          assignedSections: [],
+        });
+        } catch (error) {
+          await axiosPrivate.post('/api/project/discardUpload', { projectId: createdProjectId, s3Key: upload.s3Key }).catch(() => {});
+          throw error;
+        }
+        linkedCount += 1;
+      }
+
+      navigate(`/project/${createdProjectId}`);
     } catch (error) {
-      console.error("Error creating project:", error);
-      alert("Failed to create project.");
+      console.error('Project creation or video upload failed:', error);
+      const reason = error.response?.data?.error ||
+        error.response?.data?.message || error.message;
+
+      if (createdProjectId) {
+        // Project exists already. Don't tell users that project creation failed.
+        alert(`Project created, but only ${linkedCount} of ${pendingVideos.length} videos were added. ${reason} You can add the remaining videos from the project page.`);
+        navigate(`/project/${createdProjectId}`);
+      } else {
+        alert(`Failed to create project: ${reason}`);
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -95,89 +146,38 @@ const ProjectCreation = () => {
     setProjectInfo(prev => ({ ...prev, [name]: value }));
   };
 
-  // Handle file selection
-  const fileSelected = (e) => {
-    setFile(e.target.files[0]);
-  };
+  // Queue files locally instead of uploading before the project has been created.
+  const queueVideo = (selectedFile) => {
+    if (!selectedFile || submitting) return;
 
-  // Upload file to local storage
-  const uploadFile = async () => {
-    if (!file) return;
-    try {
-      setUploading(true);
-      const formData = new FormData();
-      formData.append('videoFile', file);
-      const { data } = await API.post('/api/project/uploadVideo', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      if (data.success) {
-        setVideo(prev => ({ ...prev, url: data.url, s3Key: data.s3Key }));
-        alert('Upload successful');
-      }
-    } catch (error) {
-      console.error("Error uploading file:", error);
-      alert('Error uploading file');
-    } finally {
-      setUploading(false);
+    if (!video.title.trim()) {
+      alert('Enter a Video Title before selecting a file.');
+      return;
     }
-  };
-
-  // Drag and Drop Upload handler – keep your previous drag & drop logic
-  const handleUploadAndAdd = async (selectedFile) => {
-    try {
-      setUploading(true);
-      const formData = new FormData();
-      formData.append('videoFile', selectedFile);
-      const { data } = await API.post('/api/project/uploadVideo', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      if (data.success) {
-        const uploadedVideo = {
-          title: video.title,
-          notes: video.notes,
-          url: data.url,
-          s3Key: data.s3Key,
-          utilityType: video.utilityType  // <-- Ensure utility type is included
-        };
-        setProjectInfo(prev => ({
-          ...prev,
-          videos: [...prev.videos, uploadedVideo],
-        }));
-        setVideo({ title: '', notes: '', url: '', s3Key: '', utilityType: '' });
-        setFile(null);
-      }
-    } catch (err) {
-      console.error("Upload failed:", err);
-      alert('Error uploading file');
-    } finally {
-      setUploading(false);
+    if (!['Sanitary', 'Storm'].includes(video.utilityType)) {
+      alert('Select Sanitary or Storm before selecting a file.');
+      return;
     }
+    if (!selectedFile.type.startsWith('video/') &&
+        !/\.(mp4|mov|webm)$/i.test(selectedFile.name)) {
+      alert('Please select a video file (MP4, MOV, or WebM).');
+      return;
+    }
+
+    setPendingVideos((previous) => [
+      ...previous,
+      {
+        file: selectedFile,
+        title: video.title.trim(),
+        notes: video.notes.trim(),
+        utilityType: video.utilityType,
+      },
+    ]);
+    setVideo({ title: '', notes: '', utilityType: '' });
   };
 
-  // Add video to local state (non-drag and drop)
-  const handleAddVideo = () => {
-    if (video.title.trim() === '') return;
-    const newVid = {
-      title: video.title,
-      notes: video.notes,
-      url: video.url,
-      s3Key: video.s3Key,
-      utilityType: video.utilityType,  // <-- Add utilityType to the video object
-    };
-    setProjectInfo(prev => ({
-      ...prev,
-      videos: [...prev.videos, newVid],
-    }));
-    setVideo({ title: '', notes: '', url: '', s3Key: '', utilityType: '' });
-    setFile(null);
-  };
-
-  // Remove video from local list
   const handleRemoveVideo = (index) => {
-    setProjectInfo(prev => ({
-      ...prev,
-      videos: prev.videos.filter((_, i) => i !== index),
-    }));
+    setPendingVideos((previous) => previous.filter((_, i) => i !== index));
   };
 
   const isDragDropAllowed = (role === 'manager' || role === 'admin');
@@ -337,13 +337,10 @@ const ProjectCreation = () => {
           {/* Drag and Drop Upload */}
           <Box
             onDragOver={(e) => e.preventDefault()}
-            onDrop={async (e) => {
+            onDrop={(e) => {
               e.preventDefault();
-              const droppedFile = e.dataTransfer.files[0];
-              if (droppedFile) {
-                setFile(droppedFile);
-                await handleUploadAndAdd(droppedFile);
-              }
+              // Drag & drop queues a file; nothing is uploaded until Create Project.
+              queueVideo(e.dataTransfer.files[0]);
             }}
             sx={{
               border: '2px dashed #ccc',
@@ -357,31 +354,45 @@ const ProjectCreation = () => {
               pointerEvents: isDragDropAllowed ? 'auto' : 'none'
             }}
           >
-            Drag & Drop Video Here
+            <Typography>Enter a video title and utility type, then drag & drop a video here.</Typography>
+            <Typography variant="caption" display="block" sx={{ mt: 1 }}>
+              Videos are uploaded after the project is created.
+            </Typography>
+            <Button component="label" variant="outlined" sx={{ mt: 2 }} disabled={!isDragDropAllowed || submitting}>
+              Browse video
+              <input
+                hidden
+                type="file"
+                aria-label="Select video file"
+                accept="video/*,.mp4,.mov,.webm"
+                onChange={(e) => {
+                  queueVideo(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </Button>
           </Box>
 
-          {/* Add Video Button
-          <Box sx={{ textAlign: 'center', mt: 2 }}>
-            <IconButton color="primary" onClick={handleAddVideo}>
-              <Add />
-            </IconButton>
-          </Box> */}
-
-          {/* Display List of Videos */}
-          {projectInfo.videos.length > 0 && (
+          {/* Selected files are queued; they have NOT been uploaded yet. */}
+          {pendingVideos.length > 0 && (
             <Box sx={{ mt: 2 }}>
-              {projectInfo.videos.map((vid, index) => (
+              {pendingVideos.map((queued, index) => (
                 <Box
-                  key={index}
+                  key={`${queued.file.name}-${index}`}
                   display="flex"
                   alignItems="center"
                   justifyContent="space-between"
                   sx={{ py: 1 }}
                 >
                   <Typography sx={{ fontFamily: '"Montserrat", sans-serif' }}>
-                    {index + 1}. {vid.title} - {vid.utilityType || 'No Type Selected'}
+                    {index + 1}. {queued.title} — {queued.utilityType} ({queued.file.name})
                   </Typography>
-                  <IconButton color="error" onClick={() => handleRemoveVideo(index)}>
+                  <IconButton
+                    color="error"
+                    disabled={submitting}
+                    onClick={() => handleRemoveVideo(index)}
+                    aria-label={`Remove ${queued.title}`}
+                  >
                     <Delete />
                   </IconButton>
                 </Box>
@@ -396,14 +407,16 @@ const ProjectCreation = () => {
               variant="contained"
               color={role === 'manager' || role === 'admin' ? 'primary' : 'secondary'}
               size="large"
-              disabled={!(role === 'manager' || role === 'admin')}
+              disabled={submitting || !(role === 'manager' || role === 'admin')}
               sx={{
                 fontFamily: '"Montserrat", sans-serif',
                 textTransform: 'uppercase',
                 fontWeight: 700,
               }}
             >
-              {role === 'manager' || role === 'admin'
+              {submitting
+                ? 'Creating Project and Uploading Videos…'
+                : role === 'manager' || role === 'admin'
                 ? 'Create Project'
                 : 'Only managers can create projects'}
             </Button>

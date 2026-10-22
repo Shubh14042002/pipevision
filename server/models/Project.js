@@ -104,6 +104,7 @@ const VideoSchema = new mongoose.Schema({
 });
 
 const UnifiedProjectSchema = new mongoose.Schema({
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", immutable: true },
   title: { type: String, required: true, trim: true },
   dateOpened: { type: Date, default: Date.now },
   description: { type: String, trim: true, maxlength: 500 },

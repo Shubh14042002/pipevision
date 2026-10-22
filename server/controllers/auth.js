@@ -2,7 +2,6 @@ import ErrorResponse from "../utils/errorResponse.js";
 import User from "../models/User.js"
 
 import jwt from "jsonwebtoken";
-import asyncHandler from "express-async-handler"
 
 import * as dotenv from 'dotenv'
 import { fileURLToPath } from 'url';
@@ -10,7 +9,7 @@ import path from 'path'; // Import the path module
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({
-  path: path.join(__dirname ,'..', '.env') 
+  path: path.join(__dirname ,'..', '.env')
 });
 
 
@@ -21,13 +20,13 @@ export const login = async (req, res, next) => {
   const { email, password } = req.body;
 
   // Check if email and password is provided
-  if (!email || !password) {
+  if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
     return next(new ErrorResponse("Please provide an email and password", 400));
   }
 
   try {
     // Check that user exists by email
-    const user = await User.findOne({ email }).select("+password");
+    const user = await User.findOne({ email: email.trim().toLowerCase() }).select("+password +tokenVersion");
 
     if (!user) {
       return next(new ErrorResponse("Invalid credentials", 401));
@@ -41,22 +40,22 @@ export const login = async (req, res, next) => {
     }
 
     const accessToken = jwt.sign(
-      { "id": user._id, }, process.env.JWT_SECRET, { expiresIn: '30m' }                                             //OVER HERE
+      { "id": user._id, version: user.tokenVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '30m' }                                             //OVER HERE
     )
 
     const refreshToken = jwt.sign(
-      { "id": user._id }, process.env.REFRESH_TOKEN_SECRET,{ expiresIn: '90d' }
-    ) 
-    
+      { "id": user._id, version: user.tokenVersion || 0 }, process.env.REFRESH_TOKEN_SECRET,{ expiresIn: '90d' }
+    )
+
     res.cookie('jwt', refreshToken, {
-      httpOnly: true, //accessible only by web server 
-      secure: true, //https
-      sameSite: 'None', //cross-site cookie 
+      httpOnly: true, //accessible only by web server
+      secure: process.env.NODE_ENV === "production", //https
+      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax", //cross-site cookie
       maxAge: 90 * 24 * 60 * 60 * 1000 //cookie expiry: set to match rT                          this is to remove the cookie when the token expires,
-      
+
     })
 
-    // Send accessToken containing username and roles 
+    // Send accessToken containing username and roles
     res.json({ accessToken })
 
   } catch (err) {
@@ -67,12 +66,12 @@ export const login = async (req, res, next) => {
 
 
 export const register = async (req, res, next) => {
-  const {name, role, email, password } = req.body;
+  const {name, email, password } = req.body;
 
   try {
     const user = await User.create({
       name,
-      role,
+      role: "user",
       email,
       password
 
@@ -81,22 +80,22 @@ export const register = async (req, res, next) => {
 
     //creating refresh, and access token
     const accessToken = jwt.sign(
-      { "id": user._id }, process.env.JWT_SECRET, { expiresIn: '30m' }                                                                    
+      { "id": user._id, version: user.tokenVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '30m' }
     )
 
     const refreshToken = jwt.sign(
-        { "id": user._id }, process.env.REFRESH_TOKEN_SECRET,{ expiresIn: '90d' }
+        { "id": user._id, version: user.tokenVersion || 0 }, process.env.REFRESH_TOKEN_SECRET,{ expiresIn: '90d' }
     )
 
     //sending refresh cookie
     res.cookie('jwt', refreshToken, {
-      httpOnly: true, //accessible only by web server 
-      secure: true, //https
-      sameSite: 'None', //cross-site cookie 
-      maxAge: 90 * 24 * 60 * 60 * 1000 //cookie expiry: set to match refreshToken. Make sure. this kills it. 
+      httpOnly: true, //accessible only by web server
+      secure: process.env.NODE_ENV === "production", //https
+      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax", //cross-site cookie
+      maxAge: 90 * 24 * 60 * 60 * 1000 //cookie expiry: set to match refreshToken. Make sure. this kills it.
     })
 
-    // Send accessToken containing username and roles 
+    // Send accessToken containing username and roles
     res.json({ accessToken })
 
   } catch (err) {
@@ -122,6 +121,8 @@ export const getAllUsers = async (req, res, next) => {
 export const changeUserRole=  async (req, res) => {
   try {
     const { role } = req.body;
+    if (!["user", "manager", "admin"].includes(role)) return res.status(400).json({ message: "Invalid role" });
+    if (String(req.user._id) === req.params.id && role !== "admin") return res.status(400).json({ message: "Administrators cannot demote themselves" });
     const user = await User.findByIdAndUpdate(req.params.id, { role }, { new: true });
 
     if (!user) {
@@ -130,7 +131,7 @@ export const changeUserRole=  async (req, res) => {
 
     res.status(200).json({ success: true, user });
   } catch (error) {
-    res.status(500).json({ message: "Server error", error });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -138,89 +139,47 @@ export const changeUserRole=  async (req, res) => {
 
 
 //this is to get a logged in user information
-export const getInfo = async (req, res, next) => {                      
-  
-
-  // Compare token in URL params to hashed token (basically checks if user has a signed in cookie)
-  let token;
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
-  ) {
-    token = req.headers.authorization.split(" ")[1];
-  }
-
-  if (!token) {
-    return next(new ErrorResponse("Not authorized to access this route", 401));
-  }
-
-
-
-  //verify user and get user information
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
-
-    if (!user) {
-      return next(new ErrorResponse("Invalid Token", 400));
-    }
-
-   //console.log(user)
-
-    res
-    .status(200)
-    .json({
-      user: user,
-    })
-
-
-
-
-    } catch (err) {
-      if (err.name === "TokenExpiredError") {
-        return next(new ErrorResponse("Token expired", 401));
-      } else if (err.name === "JsonWebTokenError") {
-        return next(new ErrorResponse("Malformed JWT token", 500));
-      } else {
-        return next(
-          new ErrorResponse("Not authorized to access this router", err, 401)
-        );
-      }
-    }
+export const getInfo = (req, res) => {
+  const user = req.user.toObject ? req.user.toObject() : { ...req.user };
+  delete user.tokenVersion;
+  res.json({ user });
 };
 
-
-
-
 //REFRESH TOKEN (tries to refresh if expired)
-export const refresh = (req, res) => {
-  const cookies = req.cookies
-  if (!cookies?.jwt) return res.status(401).json({ message: 'Unauthorized' })             //checking if refresh cookie exist, the cookie will delete on its own when it expires
+export const refresh = async (req, res, next) => {
+  let decoded;
+  try { decoded = jwt.verify(req.cookies?.jwt, process.env.REFRESH_TOKEN_SECRET, { algorithms: ["HS256"] }); }
+  catch { return res.status(401).json({ message: "Unauthorized" }); }
+  try {
+    const user = await User.findById(decoded.id).select("+tokenVersion");
+    if (!user || (decoded.version || 0) !== (user.tokenVersion || 0)) return res.status(401).json({ message: "Unauthorized" });
+    const accessToken = jwt.sign({ id: user._id, version: user.tokenVersion || 0 }, process.env.JWT_SECRET, { expiresIn: "30m" });
+    res.json({ accessToken });
+  } catch (err) { next(err); }
+};
 
-  const refreshToken = cookies.jwt
+// LOGOUT CONTROLLER
+// Clears the refresh-token cookie from the user's browser.
+// The frontend separately removes the access token from localStorage.
 
-  jwt.verify(
-      refreshToken,
-      process.env.REFRESH_TOKEN_SECRET,
-      asyncHandler(async (err) => {
-          if (err){
-            return res.status(403).json({ message: 'Forbidden' })                                                                               
-          } 
-          const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);                       // OVER HERE
-          const user = await User.findById(decoded.id);
+export const logout = async (req, res, next) => {
+  // Increment the persisted version to invalidate this user's issued JWTs.
+  // Legacy tokens without a version are treated as version zero.
+  let decoded;
+  try { decoded = jwt.verify(req.cookies?.jwt, process.env.REFRESH_TOKEN_SECRET, { algorithms: ["HS256"] }); }
+  catch { /* Missing/expired cookie still needs clearing. */ }
 
-          if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  res.clearCookie("jwt", {
+    httpOnly: true,
+    sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+  });
 
-          const accessToken = jwt.sign(
-            { "id": user._id }, process.env.JWT_SECRET, { expiresIn: '30m' }
-          )
-          console.log('refreshed!')
-          res.json({ accessToken })
-    })
-  )
-}
-
-if (!cookies?.jwt) return res.sendStatus(204)
-
+  try {
+    if (decoded?.id) await User.updateOne({ _id: decoded.id }, { $inc: { tokenVersion: 1 } });
+    return res.status(200).json({ message: "Logged out successfully" });
+  } catch (err) { next(err); }
+};
 
 
